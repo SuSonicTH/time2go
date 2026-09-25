@@ -26,12 +26,19 @@ Remaining:   06:52
 
 If the workday is over, `Remaining` shows a negative value with `(overtime)`.
 
-### Flags
+### Configuring the workday duration
 
-| Flag        | Default | Description                          |
-|-------------|---------|---------------------------------------|
-| `-workday`  | `7h45m` | Workday duration (e.g. `8h`, `7h30m`) |
+The workday duration defaults to `8h` and can be set, in order of precedence
+(highest wins):
 
-```powershell
-.\time2go.exe -workday 8h
-```
+1. **Command-line flag:** `-workday`
+   ```powershell
+   .\time2go.exe -workday 7h45m
+   ```
+2. **Environment variable:** `time2go_workday`
+   ```powershell
+   $env:time2go_workday = "7h45m"
+   ```
+3. **Config file:** `~/.config/time2go` — a plain text file containing a Go
+   duration string (e.g. `7h45m`)
+4. **Default:** `8h`
