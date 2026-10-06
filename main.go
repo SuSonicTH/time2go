@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 const defaultWorkday = 8 * time.Hour
@@ -65,6 +66,71 @@ func bootTime() time.Time {
 	return time.Now().Add(-uptime)
 }
 
+// parseStart parses an hh:mm time as today's local time. It must not be in
+// the future relative to now.
+func parseStart(s string, now time.Time) (time.Time, error) {
+	t, err := time.Parse("15:04", strings.TrimSpace(s))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%q is not a valid hh:mm time", s)
+	}
+	start := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, now.Location())
+	if start.After(now) {
+		return time.Time{}, fmt.Errorf("start time %s is in the future", s)
+	}
+	return start, nil
+}
+
+const (
+	barInterval = 15 * time.Minute
+	ansiRed     = "\x1b[31m"
+	ansiReset   = "\x1b[0m"
+)
+
+// enableColor turns on ANSI escape processing for the console and reports
+// whether colors can be used.
+func enableColor() bool {
+	const enableVirtualTerminalProcessing = 0x0004
+	getMode := kernel32.NewProc("GetConsoleMode")
+	setMode := kernel32.NewProc("SetConsoleMode")
+	h := uintptr(syscall.Stdout)
+	var mode uint32
+	if r, _, _ := getMode.Call(h, uintptr(unsafe.Pointer(&mode))); r == 0 {
+		return false
+	}
+	if r, _, _ := setMode.Call(h, uintptr(mode|enableVirtualTerminalProcessing)); r == 0 {
+		return false
+	}
+	return true
+}
+
+// progressBar renders worked time in 15 minute blocks. Blocks beyond the end
+// of the workday are overtime, shown in red.
+func progressBar(uptime, workday time.Duration, color bool) string {
+	total := int((workday + barInterval - 1) / barInterval)
+	worked := int(uptime / barInterval)
+
+	var sb strings.Builder
+	sb.WriteString("[")
+	for i := 0; i < total; i++ {
+		if i < worked {
+			sb.WriteString("█")
+		} else {
+			sb.WriteString("░")
+		}
+	}
+	if over := worked - total; over > 0 {
+		if color {
+			sb.WriteString(ansiRed)
+		}
+		sb.WriteString(strings.Repeat("█", over))
+		if color {
+			sb.WriteString(ansiReset)
+		}
+	}
+	sb.WriteString("]")
+	return sb.String()
+}
+
 func formatDuration(d time.Duration) string {
 	sign := ""
 	if d < 0 {
@@ -79,6 +145,7 @@ func formatDuration(d time.Duration) string {
 
 func main() {
 	flagVal := flag.Duration("workday", defaultWorkday, "workday duration (e.g. 7h45m)")
+	startVal := flag.String("start", "", "start time of the workday as hh:mm (replaces boot time)")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", os.Args[0])
 		flag.PrintDefaults()
@@ -100,17 +167,29 @@ Workday duration precedence (highest wins):
 	})
 	workday := resolveWorkday(*flagVal, flagSet)
 
-	boot := bootTime()
-	uptime := time.Since(boot)
+	start := bootTime()
+	startLabel, uptimeLabel := "Boot time:", "Uptime:"
+	if *startVal != "" {
+		t, err := parseStart(*startVal, time.Now())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid -start value: %v\n", err)
+			os.Exit(2)
+		}
+		start = t
+		startLabel, uptimeLabel = "Start time:", "Worked:"
+	}
+	uptime := time.Since(start)
 	remaining := workday - uptime
-	end := boot.Add(workday)
+	end := start.Add(workday)
 
-	fmt.Printf("Boot time:   %s\n", boot.Round(time.Minute).Format("15:04"))
-	fmt.Printf("Uptime:      %s\n", formatDuration(uptime))
+	fmt.Printf("%-12s %s\n", startLabel, start.Round(time.Minute).Format("15:04"))
+	fmt.Printf("%-12s %s\n", uptimeLabel, formatDuration(uptime))
+	fmt.Printf("Workday:     %s\n", formatDuration(workday))
 	fmt.Printf("Workday end: %s\n", end.Round(time.Minute).Format("15:04"))
 	if remaining >= 0 {
 		fmt.Printf("Remaining:   %s\n", formatDuration(remaining))
 	} else {
 		fmt.Printf("Remaining:   %s (overtime)\n", formatDuration(remaining))
 	}
+	fmt.Println(progressBar(uptime, workday, enableColor()))
 }
